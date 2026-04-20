@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     async_run_parser = subparsers.add_parser(
         "async-run",
         help=(
-            "Asynchronous job start: POST JSON to run_flask_api /api/run on the cloud PC (via machine exec). "
+            "Asynchronous job start: POST JSON to the cloud PC run API /api/run (via machine exec). "
             "On success you only get the API response (e.g. pid, lock_path)—not job completion; poll GET /api/lock."
         ),
     )

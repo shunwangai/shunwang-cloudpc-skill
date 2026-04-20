@@ -1,19 +1,19 @@
 ---
-name: shunwang-cloudpc
-description: Operate a remote cloud Windows PC through the local swcloud client. 
+name: "shunwang-cloudpc"
+description: "Operate a remote cloud Windows PC through the local swcloud client. "
 ---
 
 # Shunwang Cloud PC
 
 Use this skill for remote operations on the cloud Windows machine exposed by the local `swcloud` client.
 
-**Remote environment:** The cloud PC is **Windows** (not Linux/macOS). Every command you send via `exec` / `async-run` runs **on that Windows VM**. Use **Windows shell syntax**: default **`cmd`** (`dir`, `type`, `copy`, `move`, `del`, `where`, backslash paths like `Z:\...` or forward-slash API style `Z:/...`), or **`powershell`** when you need PowerShell (`Get-ChildItem`, `Get-Content`, `Invoke-RestMethod`, etc.). **Do not** assume Unix tools (`ls`, `cat`, `grep`, `cp`, `/tmp`, POSIX paths) exist on the remote side unless you have verified a specific toolchain.
+**Remote environment:** The cloud PC is **Windows** (not Linux/macOS). Every command you send via **`exec`**, **`async-run`**, or **[`sync-run`](#sync-run)** (`async-run` + **`/api/run_sync`**) runs **on that Windows VM**. Use **Windows shell syntax**: default **`cmd`** (`dir`, `type`, `copy`, `move`, `del`, `where`, backslash paths like `Z:\...` or forward-slash API style `Z:/...`), or **`powershell`** when you need PowerShell (`Get-ChildItem`, `Get-Content`, `Invoke-RestMethod`, etc.). **Do not** assume Unix tools (`ls`, `cat`, `grep`, `cp`, `/tmp`, POSIX paths) exist on the remote side unless you have verified a specific toolchain.
 
-**Local files (agent / developer machine):** Reading, writing, or inspecting files **on this machine** does not need a cloud-pc workflow—use normal local tools (editor, `read_file`, a single local shell command, etc.). Reserve `cloud_pc_api.py` (`upload`, `download`, `exec`, `async-run`) for **cloud** lifecycle and **VM** paths. Do not overcomplicate local file work with upload/download choreography when the file is already local.
+**Local files (agent / developer machine):** Reading, writing, or inspecting files **on this machine** does not need a cloud-pc workflow—use normal local tools (editor, `read_file`, a single local shell command, etc.). Reserve `cloud_pc_api.py` (`upload`, `download`, `exec`, `async-run`, sync via **[`sync-run`](#sync-run)**) for **cloud** lifecycle and **VM** paths. Do not overcomplicate local file work with upload/download choreography when the file is already local.
 
 Prefer the bundled scripts over ad hoc inline API calls:
 
-- `scripts/cloud_pc_api.py` for lifecycle, remote shell execution, **`async-run`** (异步 POST `/api/run` via `run_flask_api.py`; success = pid + response only—**poll `GET /api/lock`** to detect non-zero exit / failure), upload, and download
+- `scripts/cloud_pc_api.py` for lifecycle, remote shell execution, **`async-run`** (默认 **`POST /api/run`**，异步—success = pid only，**poll `GET /api/lock`**), **[`sync-run`](#sync-run)**（**`POST /api/run_sync`**，同步—见该节）, upload, and download
 
 All `scripts/...` paths below are relative to this skill directory, so do not hardcode a user-specific home path.
 
@@ -45,12 +45,13 @@ Use this skill when the user asks to:
 1. Always prefer the bundled scripts first.
 2. Use Python or the bundled scripts for the localhost API. Do not use `curl`.
    - **`exec`** (positional `COMMAND_TEXT`) → calls `swcloud /api/machine/exec`; **blocks until the command finishes**; suitable for **quick queries** that finish in **< ~10 seconds** (readiness probes, `dir`, small `type`/`Get-Content`, `nvidia-smi`, etc.)
-   - **`async-run`（异步）** → runs PowerShell on the cloud PC that POSTs JSON to `run_flask_api.py` **`POST /api/run`**. **Does not wait for the workload to finish**: a successful call only confirms the runner **accepted** the job (`pid`, `lock_path`, etc.). **Mandatory:** poll **`GET /api/lock`** on the same Flask runner until the task ends—when the child process has exited, the lock payload includes **`task_finished`**, **`last_exit_code`**, **`task_failed`**, and **`task_error`** if the exit code was non-zero. Without **`/api/lock`**, the API path gives **no stderr/traceback and no failure signal** (child output goes to the Flask process console on the VM only, unless the app writes its own log files). Suitable for **any task that may run longer than ~10 seconds** (training, inference, music generation, etc.)
-   - **On `async-run`, body sources**: `--command-part` (repeat per argv token) builds `command_parts`; **`--api-json`** is an inline JSON string for the full POST body; **`--api-body`** is a local UTF-8 file with that JSON. **Do not combine** `--command-part` with `--api-body` or `--api-json`. For flags with values (`--output_path`, `--input_params_file`, etc.), prefer **`--api-json`** or **`--api-body`** with a full `command_parts` (or `command`/`cwd`) object.
-   - **`--json` (global):** prints structured JSON for lifecycle/upload/download; for **`exec`** / **`async-run`**, prints the raw **`/api/machine/exec`** response instead of only `stdout`/`stderr`.
-   - **Rule: use `exec` + one Windows shell line for viewing results/status and for quick file ops on the VM (`dir`, `type`, `Get-Content`, small copies); use `async-run` + `--api-json` or `--api-body` for starting long-running jobs with complex argv**
+   - **`async-run`（异步）** → **`--run-url`** 默认为 **`/api/run`**。Runs PowerShell on the cloud PC that POSTs JSON to the **cloud VM run API** at **`POST /api/run`**. **Does not wait for the workload to finish**: a successful call only confirms the runner **accepted** the job (`pid`, `lock_path`, etc.). **Mandatory:** poll **`GET /api/lock`** on the same run API until the task ends—when the child process has exited, the lock payload includes **`task_finished`**, **`last_exit_code`**, **`task_failed`**, and **`task_error`** if the exit code was non-zero. Without **`/api/lock`**, the API path gives **no stderr/traceback and no failure signal** (child output goes to the run API server on the VM only, unless the app writes its own log files). Suitable for **any task that may run longer than ~10 seconds** (training, inference, music generation, etc.)
+   - **`sync-run`（同步）** → 见 **[CLI reference · `sync-run`](#sync-run)**：通过同一子命令 **`async-run`** 将 **`--run-url`** 设为 **`http://127.0.0.1:5055/api/run_sync`**，调用 **`POST /api/run_sync`**；阻塞至命令结束或 API 层 **`timeout`**；一次返回 **`stdout`** / **`stderr`** / **`exit_code`** / **`timed_out`** 等；锁冲突 **409**；外层 **`--timeout`** 须大于预期运行时间。
+   - **On `async-run` / `sync-run` (same subcommand), body sources**: `--command-part` (repeat per argv token) builds `command_parts`; **`--api-json`** is an inline JSON string for the full POST body; **`--api-body`** is a local UTF-8 file with that JSON. **Do not combine** `--command-part` with `--api-body` or `--api-json`. For flags with values (`--output_path`, `--input_params_file`, etc.), prefer **`--api-json`** or **`--api-body`** with a full `command_parts` (or `command`/`cwd`) object. For **`sync-run`**, the POST body may also include API-level **`timeout`** (float, seconds)—see **[Cloud VM run API](#cloud-vm-run-api)**.
+   - **`--json` (global):** prints structured JSON for lifecycle/upload/download; for **`exec`** / **`async-run`** (including **sync-run** invocations), prints the raw **`/api/machine/exec`** response instead of only `stdout`/`stderr`.
+   - **Rule: use `exec` + one Windows shell line for viewing results/status and for quick file ops on the VM (`dir`, `type`, `Get-Content`, small copies); use `async-run` + `--api-json` or `--api-body` for starting long-running jobs with complex argv; use sync-run when you need full remote stdout/stderr in one round trip and can set a large enough outer `--timeout`**
 3. Always use forward slashes for remote Windows paths passed to the API, for example `C:/Users/Administrator/Desktop` (the VM is still Windows; slashes are for JSON/API convenience).
-4. Before any remote operation, first warm the cloud PC until it is actually reachable, not just "starting". Use `python3 scripts/cloud_pc_api.py --auto-start-client --auto-start-cloud ready` when you need an explicit preflight. Treat that warmup as required before `exec`, `async-run`, `upload`, and `download` when the session might be cold.
+4. Before any remote operation, first warm the cloud PC until it is actually reachable, not just "starting". Use `python3 scripts/cloud_pc_api.py --auto-start-client --auto-start-cloud ready` when you need an explicit preflight. Treat that warmup as required before `exec`, `async-run` (including **sync-run**), `upload`, and `download` when the session might be cold.
 5. Default to `cmd` for simple **Windows** commands on the VM. Use `powershell` when the command needs PowerShell syntax or the app manifest already specifies PowerShell.
 6. GUI apps must use detached execution.
 7. **Remote skill paths:** **only** **`Z:/aicloud/astart/ai-service/skills/`** and **`Q:/skills/`**—see **[Cloud skills roots](#cloud-skills-roots-authoritative)**. Always list **both**; never add a third lookup location. Do not treat local notes (e.g. `aiapp.md`) as authoritative over what is on the cloud disks.
@@ -91,11 +92,11 @@ Warm the session before registry or file work when needed:
 python3 scripts/cloud_pc_api.py --auto-start-client --auto-start-cloud ready
 ```
 
-**Async reminder (see also Core Rules §2 and `run_flask_api.py`):** `POST /api/run` returns only acceptance (`ok`, `pid`, `lock_path`; **409** if busy). **You cannot tell if the job crashed or exited non-zero from that response alone.** Poll **`GET /api/lock`** until `running` is false and inspect **`task_failed`** / **`last_exit_code`** (and **`task_error`** when failed). Long or uncertain work must use **`async-run`**, not plain **`exec`** (~10s practical limit on `/api/machine/exec`).
+**Async reminder (see also Core Rules §2 and [Cloud VM run API](#cloud-vm-run-api)):** `POST /api/run` returns only acceptance (`ok`, `pid`, `lock_path`; **409** if busy). **You cannot tell if the job crashed or exited non-zero from that response alone.** Poll **`GET /api/lock`** until `running` is false and inspect **`task_failed`** / **`last_exit_code`** (and **`task_error`** when failed). Long or uncertain work must use **`async-run`** with **`/api/run`**, not plain **`exec`** (~10s practical limit on `/api/machine/exec`). For **one-shot** stdout/stderr + exit status without lock polling, use **[`sync-run`](#sync-run)** / **`POST /api/run_sync`** (larger outer **`--timeout`**).
 
 ## CLI reference (`scripts/cloud_pc_api.py`)
 
-Authoritative list of flags and subcommands as implemented in `parse_args()` / handlers. Subcommand is **required** (`dest="command"`).
+Authoritative list of flags and subcommands as implemented in `parse_args()` / handlers. Subcommand is **required** (`dest="command"`). **`sync-run`** is a **documentation-only** name for **`async-run`** with **`--run-url`** → **`/api/run_sync`**—see **[`sync-run`](#sync-run)**.
 
 ### Global flags (before the subcommand)
 
@@ -103,7 +104,7 @@ Authoritative list of flags and subcommands as implemented in `parse_args()` / h
 |------|--------|
 | `--auto-start-client` | If the localhost client API is unreachable, run `swcloud start` and poll ports **19830–19839** until a `/api/ping` succeeds (up to ~30s). |
 | `--auto-start-cloud` | If the cloud is not streaming, call `/api/cloud/start` (long timeout), then **`wait_for_cloud_ready`** until remote `cmd` can run the probe and return the expected marker. |
-| `--json` | Prefer printing **raw JSON** from the client API where applicable: `ping`, `status`, `auth`, `start`, `stop`, `ready`, `upload`, `download` use `print_result` with this flag. For **`exec`** and **`async-run`**, when set, prints the full **`/api/machine/exec`** response object as JSON instead of streaming `stdout`/`stderr` to the terminal. |
+| `--json` | Prefer printing **raw JSON** from the client API where applicable: `ping`, `status`, `auth`, `start`, `stop`, `ready`, `upload`, `download` use `print_result` with this flag. For **`exec`** and **`async-run`** (including **[`sync-run`](#sync-run)**), when set, prints the full **`/api/machine/exec`** response object as JSON instead of streaming `stdout`/`stderr` to the terminal. |
 
 ### Subcommands with no extra arguments
 
@@ -121,11 +122,13 @@ Authoritative list of flags and subcommands as implemented in `parse_args()` / h
 
 ### `async-run`
 
-Builds a PowerShell snippet that **base64-decodes** the POST body and calls **`Invoke-RestMethod -Method Post`** against `--run-url`, then returns compressed JSON from the VM. The outer call is still **`/api/machine/exec`** with `shell: powershell`.
+Subcommand name in `parse_args()`: **`async-run`**. Builds a PowerShell snippet that **base64-decodes** the POST body and calls **`Invoke-RestMethod -Method Post`** against **`--run-url`**, then returns compressed JSON from the VM. The outer call is still **`/api/machine/exec`** with `shell: powershell`.
+
+**Async default:** **`--run-url`** is **`http://127.0.0.1:5055/api/run`** → **`POST /api/run`**. Success means the runner **accepted** the job only—**poll `GET /api/lock`** for completion and exit status. For synchronous **`POST /api/run_sync`**, see **[`sync-run`](#sync-run)** (same subcommand, different URL).
 
 | Argument | Type / default | Notes |
 |----------|----------------|--------|
-| `--run-url` | string, default `http://127.0.0.1:5055/api/run` | POST target on the **cloud** (forwarded via swcloud). |
+| `--run-url` | string, default `http://127.0.0.1:5055/api/run` | POST target on the **cloud** (forwarded via swcloud). Keep default for **async** `/api/run`. |
 | `--command-part` `PART` | repeatable | Each use appends one string to `command_parts` in the POST body. **Mutually exclusive** with `--api-body` and `--api-json` (script raises if combined). |
 | `--api-json` | string | Inline JSON for the **entire** POST body (must be valid JSON; validated locally). |
 | `--api-body` | path | UTF-8 file whose **full contents** are the POST body (must be valid JSON; validated locally). |
@@ -134,6 +137,21 @@ Builds a PowerShell snippet that **base64-decodes** the POST body and calls **`I
 | `--working-dir` | optional string | `working_dir` on the outer exec payload. |
 
 **Body requirement:** exactly one of: at least one `--command-part`, or `--api-json`, or `--api-body`.
+
+### `sync-run`
+
+**Not a separate argparse subcommand**—use **`async-run`** with **`--run-url "http://127.0.0.1:5055/api/run_sync"`** so the same PowerShell **`Invoke-RestMethod`** POST hits **`POST /api/run_sync`** on the **cloud VM run API** (forwarded via swcloud).
+
+**Behavior:** The **`/api/run_sync`** endpoint **blocks** until the remote command exits or until the optional API body field **`timeout`** (float, seconds) elapses (process killed; response carries **`timed_out`**). The HTTP response includes **`stdout`**, **`stderr`**, **`exit_code`**, **`timed_out`**, and related fields—**no `GET /api/lock` polling**. Lock busy → **409 Conflict** (same as **`/api/run`**).
+
+**Outer `--timeout`:** The wrapping **`/api/machine/exec`** still enforces **`async-run`’s `--timeout`** (default 30s). For jobs that may run longer, **raise `--timeout`** so the outer exec does not kill the PowerShell wrapper before **`/api/run_sync`** returns.
+
+**POST body:** Same sources as **[`async-run`](#async-run)** (`--command-part` / `--api-json` / `--api-body`). Fields: **`command`** or **`command_parts`** (required, same as `/api/run`); optional **`cwd`**; optional **`timeout`** (API-side limit in seconds). See **[Cloud VM run API](#cloud-vm-run-api)** for full **`/api/run_sync`** contract.
+
+| Concern | Notes |
+|---------|--------|
+| CLI flags | Identical table to **`async-run`** except **`--run-url`** must be **`.../api/run_sync`**. |
+| JSON **`timeout`** | Optional in POST body; kills remote task when exceeded. Distinct from outer **`--timeout`**. |
 
 ### `upload`
 
@@ -185,7 +203,7 @@ When the user asks for an outcome (for example generating music):
 2. Build the full argv for the app (or a single shell line if the manifest uses `command` as a string) and start it with `async-run` and `--run-url` pointing at `/api/run`, using `--api-json` with a `command_parts` array.
 3. After `async-run`, **poll `GET /api/lock`** until the task is no longer `running`; if **`task_failed`** is true or **`last_exit_code`** ≠ 0, treat the run as failed—do not assume success from `POST /api/run` alone.
 4. When outputs exist on known paths, download with `python3 scripts/cloud_pc_api.py --auto-start-cloud download --remote-path ... --local-path ...` and give the user the local paths.
-5. For deep diagnostics (Python tracebacks, stderr), the child inherits the Flask console on the VM unless the app redirects logs—**`/api/lock` still surfaces process exit status**; use app log files or VM console when you need full text.
+5. For deep diagnostics (Python tracebacks, stderr), the child’s output may only appear on the run API server console on the VM unless the app redirects logs—**`/api/lock` still surfaces process exit status**; use app log files or VM console when you need full text.
 
 ## Registry Layout
 
@@ -224,31 +242,42 @@ When an app fails unexpectedly:
 3. Prefer absolute executable paths when relative paths are unreliable.
 4. If the app is long-running, redirect logs and inspect the output file or log tail.
 
-## Cloud VM HTTP runner (`scripts/run_flask_api.py`)
+## Cloud VM run API
 
-The Flask app defined in `run_flask_api.py` listens on the **cloud Windows machine** (default `127.0.0.1:5055`, overridable via `RUN_API_HOST` / `RUN_API_PORT`). Start it on the VM from `cloud-pc/scripts` (see file docstring: `pip install -r requirements-run-api.txt`, then `python run_flask_api.py`).
+The **run API** is an HTTP service on the **cloud Windows machine** (typically **`127.0.0.1:5055`** from the VM’s perspective; **`--run-url`** in `cloud_pc_api.py` uses that loopback address because the POST is executed **on the cloud PC** via `swcloud`). It is **not** part of this skill’s `scripts/` bundle—assume the platform exposes **`/api/run`**, **`/api/run_sync`**, **`/api/lock`**, and **`/health`** when the cloud session is up.
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/health` | Liveness |
 | GET | `/api/lock` | **Required for async observability:** `locked`, `pid`, `running`; after the child exits, **`task_finished`**, **`last_exit_code`**, **`task_failed`**, **`task_error`** (non-zero exit). Without polling this, API callers do not see failure. |
 | POST | `/api/run` | Start one detached task; body JSON (use for any work that may exceed ~10s—avoids synchronous `/api/machine/exec` timeouts) |
+| POST | `/api/run_sync` | Start one **synchronous** task: blocks until the command finishes or **`timeout`** (seconds) fires; returns **`stdout`**, **`stderr`**, **`exit_code`**, **`timed_out`**, etc. **409** if lock busy (same as `/api/run`). |
 
-**Why this exists:** `/api/run` spawns the workload in the background and returns a `pid`. The normal remote shell path (`/api/machine/exec` via plain `exec`) blocks until the command exits and hits client timeouts; **treat ~10 seconds as the practical ceiling** for that path.
+**Why this exists:** `/api/run` spawns the workload in the background and returns a `pid`. The normal remote shell path (`/api/machine/exec` via plain `exec`) blocks until the command exits and hits client timeouts; **treat ~10 seconds as the practical ceiling** for that path. **`/api/run_sync`** is for callers who need **full output and exit status in one HTTP response** and can afford a longer-blocking request (still subject to outer `/api/machine/exec` timeouts when invoked via `async-run`).
 
-**Why `/api/lock` matters:** `POST /api/run` does **not** stream stderr or return Python tracebacks to the client. Detached children attach stdout/stderr to the **Flask server process** on the VM. The **only** structured signal on the HTTP API for “did it fail?” is **`GET /api/lock`** after the process exits (non-zero → **`task_failed`**: true, **`task_error`** set). Poll it on an interval until `running` is false (or handle **`pid_check_error`** if present).
+**Why `/api/lock` matters:** `POST /api/run` does **not** stream stderr or return Python tracebacks to the client. Detached children usually attach stdout/stderr to the **run API server process** on the VM (implementation-dependent). The **only** structured signal on the HTTP API for “did it fail?” is **`GET /api/lock`** after the process exits (non-zero → **`task_failed`**: true, **`task_error`** set). Poll it on an interval until `running` is false (or handle **`pid_check_error`** if present).
 
 **POST `/api/run` body (JSON):**
 
-- `command_parts`: non-empty array of argv strings (preferred; joined for Windows with `subprocess.list2cmdline`).
+- `command_parts`: non-empty array of argv strings (preferred; assembled into a Windows command line on the server).
 - or `command`: single string to run in a shell.
 - optional `cwd`: working directory string.
 
-**Responses:** On success, HTTP 200 and JSON including `ok: true`, `pid`, `lock_path`. If a previous task's PID is still running, HTTP **409** with `busy`, `conflict_pid`. Malformed body → **400**. The child's stdout/stderr attach to the Flask process console on the VM—**not** to your `async-run` response.
+**Responses:** On success, HTTP 200 and JSON including `ok: true`, `pid`, `lock_path`. If a previous task's PID is still running, HTTP **409** with `busy`, `conflict_pid`. Malformed body → **400**. The child's stdout/stderr usually go to the run API server on the VM—**not** to your `async-run` response.
+
+**POST `/api/run_sync` body (JSON):**
+
+- **`command_parts`**: non-empty array of argv strings (preferred), or **`command`**: single string—same meaning as `/api/run`.
+- **`cwd`** (optional): working directory.
+- **`timeout`** (optional, float): maximum runtime in **seconds**. If the task does not finish in time, the process is **killed** and the response indicates timeout (e.g. **`timed_out`: true**).
+
+**POST `/api/run_sync` responses:** HTTP **200** with the task’s final state: **`exit_code`**, **`stdout`**, **`stderr`**, **`timed_out`**, and any other fields the runner adds for completion status. Lock conflict → HTTP **409 Conflict** (same semantics as busy **`/api/run`**). Malformed body → **400**.
 
 **From the agent's machine:** Do not call `5055` directly unless you are on the VM. Use `python3 scripts/cloud_pc_api.py ... async-run --run-url "http://127.0.0.1:5055/api/run" ...` so the local swcloud client forwards execution to the cloud and the POST runs there. Then **poll lock status** by running a second remote step (e.g. `exec` with `Invoke-RestMethod -Uri 'http://127.0.0.1:5055/api/lock'` or equivalent) until you see a terminal state with **`task_failed`** / **`last_exit_code`** as needed—`async-run` only wraps the **POST**, not lock polling.
 
+**Synchronous path:** See **[`sync-run`](#sync-run)**—`async-run --run-url "http://127.0.0.1:5055/api/run_sync"` with a large enough outer **`--timeout`**.
+
 ## Notes
 
-- **Cross-references:** Remote OS and command style → opening **Remote environment** + **Core Rules** §2–§5; **local vs cloud file handling** → **Remote environment** (Local files paragraph); VM skill roots (**only** `Z:/aicloud/astart/ai-service/skills/` + `Q:/skills/`) and manifest order → **Cloud skills roots** + **Registry Layout**; localhost flags and subcommands → **CLI reference**; `exec` vs `async-run` and ~10s rule → **Core Rules** §2; large downloads → **Core Rules** §11 and **File size, compression, and ffmpeg**.
+- **Cross-references:** Remote OS and command style → opening **Remote environment** + **Core Rules** §2–§5; **local vs cloud file handling** → **Remote environment** (Local files paragraph); VM skill roots (**only** `Z:/aicloud/astart/ai-service/skills/` + `Q:/skills/`) and manifest order → **Cloud skills roots** + **Registry Layout**; localhost flags and subcommands → **CLI reference**; **`/api/run`**, **`/api/run_sync`**, **`/api/lock`** → **Cloud VM run API**; `exec` vs **`async-run`** vs **`sync-run`** and ~10s rule → **Core Rules** §2 + **`sync-run`**; large downloads → **Core Rules** §11 and **File size, compression, and ffmpeg**.
 - Deliverables: if the user needs an artifact from the cloud PC, **download** it and give the **local path**—do not leave it only on the VM.
