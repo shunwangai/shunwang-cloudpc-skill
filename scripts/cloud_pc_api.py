@@ -8,9 +8,6 @@ import sys
 import time
 import urllib.request
 
-from cloud_pc_transfer import download_with_chunk_fallback
-
-
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
@@ -42,35 +39,57 @@ def parse_args() -> argparse.Namespace:
     exec_parser.add_argument("--working-dir")
     exec_parser.add_argument("command_text", nargs="?", default=None)
 
+    def add_run_api_cli_arguments(
+        parser: argparse.ArgumentParser,
+        *,
+        default_run_url: str,
+    ) -> None:
+        parser.add_argument("--timeout", type=int, default=30)
+        parser.add_argument("--detach", action="store_true")
+        parser.add_argument("--working-dir")
+        parser.add_argument(
+            "--run-url",
+            default=default_run_url,
+            help=f"Target URL for Invoke-RestMethod POST (default: {default_run_url}).",
+        )
+        parser.add_argument(
+            "--api-body",
+            help="Local file whose contents are the JSON POST body for the run API.",
+        )
+        parser.add_argument(
+            "--api-json",
+            help="Inline JSON string for POST body (alternative to --api-body).",
+        )
+        parser.add_argument(
+            "--command-part",
+            action="append",
+            dest="command_parts",
+            metavar="PART",
+            help="One argv string for command_parts in the POST body (repeat flag for each token).",
+        )
+
     async_run_parser = subparsers.add_parser(
         "async-run",
         help=(
-            "Asynchronous job start: POST JSON to the cloud PC run API /api/run (via machine exec). "
-            "On success you only get the API response (e.g. pid, lock_path)—not job completion; poll GET /api/lock."
+            "Asynchronous job start: POST JSON to the cloud PC run API POST /api/run_async (via machine exec). "
+            "On success you only get acceptance (e.g. pid, lock_path)—not job completion; poll GET /api/lock_async."
         ),
     )
-    async_run_parser.add_argument("--timeout", type=int, default=30)
-    async_run_parser.add_argument("--detach", action="store_true")
-    async_run_parser.add_argument("--working-dir")
-    async_run_parser.add_argument(
-        "--run-url",
-        default="http://127.0.0.1:5055/api/run",
-        help="Target URL for Invoke-RestMethod POST (default: http://127.0.0.1:5055/api/run).",
+    add_run_api_cli_arguments(
+        async_run_parser,
+        default_run_url="http://127.0.0.1:5055/api/run_async",
     )
-    async_run_parser.add_argument(
-        "--api-body",
-        help="Local file whose contents are the JSON POST body for /api/run.",
+
+    sync_run_parser = subparsers.add_parser(
+        "sync-run",
+        help=(
+            "Synchronous job: POST JSON to POST /api/run_sync (via machine exec). "
+            "Blocks until the remote command exits or the run API times out; outer --timeout must cover wait time."
+        ),
     )
-    async_run_parser.add_argument(
-        "--api-json",
-        help="Inline JSON string for POST body (alternative to --api-body).",
-    )
-    async_run_parser.add_argument(
-        "--command-part",
-        action="append",
-        dest="command_parts",
-        metavar="PART",
-        help="One argv string for command_parts in the POST body (repeat flag for each token).",
+    add_run_api_cli_arguments(
+        sync_run_parser,
+        default_run_url="http://127.0.0.1:5055/api/run_sync",
     )
 
     upload_parser = subparsers.add_parser("upload")
@@ -228,7 +247,7 @@ def _async_run_payload_from_args(args: argparse.Namespace) -> dict:
         body_raw = args.api_json
         json.loads(body_raw)
     else:
-        raise RuntimeError("async-run requires --api-body, --api-json, or at least one --command-part")
+        raise RuntimeError("run-api command requires --api-body, --api-json, or at least one --command-part")
     b64 = base64.b64encode(body_raw.encode("utf-8")).decode("ascii")
     url_escaped = args.run_url.replace("'", "''")
     ps = (
@@ -248,7 +267,7 @@ def _async_run_payload_from_args(args: argparse.Namespace) -> dict:
 def handle_exec(base_url: str, args: argparse.Namespace) -> int:
     if not args.command_text:
         raise RuntimeError(
-            "exec requires COMMAND_TEXT (remote shell one-liner); for asynchronous POST /api/run use async-run"
+            "exec requires COMMAND_TEXT (remote shell one-liner); for POST /api/run_async use async-run, or sync-run for /api/run_sync"
         )
     payload = {
         "command": args.command_text,
@@ -300,37 +319,13 @@ def handle_upload(base_url: str, args: argparse.Namespace, as_json: bool) -> int
     return 0
 
 
-def exec_powershell(base_url: str, command: str, timeout: int = 300) -> str:
-    result = request_json(
-        base_url,
-        "/api/machine/exec",
-        params={"command": command, "shell": "powershell", "timeout": timeout},
-        timeout=timeout + 15,
-    )
-    if result.get("status") != "ok":
-        raise RuntimeError(json.dumps(result, ensure_ascii=False))
-    return result.get("stdout", "")
-
-
 def handle_download(base_url: str, args: argparse.Namespace, as_json: bool) -> int:
-    def request_download(remote_path: str, local_path: str, tail_bytes: int, timeout: int) -> dict:
-        payload = {
-            "remote_path": remote_path,
-            "local_path": local_path,
-            "tail_bytes": tail_bytes,
-        }
-        return request_json(base_url, "/api/machine/download", params=payload, timeout=timeout)
-
-    if args.tail_bytes > 0:
-        result = request_download(args.remote_path, args.local_path, args.tail_bytes, 300)
-    else:
-        result = download_with_chunk_fallback(
-            request_download,
-            lambda command, timeout=300: exec_powershell(base_url, command, timeout=timeout),
-            args.remote_path,
-            args.local_path,
-            timeout=300,
-        )
+    payload = {
+        "remote_path": args.remote_path,
+        "local_path": args.local_path,
+        "tail_bytes": args.tail_bytes,
+    }
+    result = request_json(base_url, "/api/machine/download", params=payload, timeout=300)
     print_result(result, as_json)
     return 0
 
@@ -338,8 +333,8 @@ def handle_download(base_url: str, args: argparse.Namespace, as_json: bool) -> i
 def main() -> int:
     args = parse_args()
 
-    needs_cloud = args.command in {"exec", "async-run", "upload", "download"}
-    needs_streaming_check = args.command in {"ready", "exec", "async-run", "upload", "download"}
+    needs_cloud = args.command in {"exec", "async-run", "sync-run", "upload", "download"}
+    needs_streaming_check = args.command in {"ready", "exec", "async-run", "sync-run", "upload", "download"}
 
     port = ensure_client(args.auto_start_client or args.auto_start_cloud)
     base_url = f"http://127.0.0.1:{port}"
@@ -364,7 +359,7 @@ def main() -> int:
 
     if args.command == "exec":
         return handle_exec(base_url, args)
-    if args.command == "async-run":
+    if args.command in {"async-run", "sync-run"}:
         return handle_async_run(base_url, args)
     if args.command == "upload":
         return handle_upload(base_url, args, args.json)

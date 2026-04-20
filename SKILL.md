@@ -7,13 +7,13 @@ description: "Operate a remote cloud Windows PC through the local swcloud client
 
 Use this skill for remote operations on the cloud Windows machine exposed by the local `swcloud` client.
 
-**Remote environment:** The cloud PC is **Windows** (not Linux/macOS). Every command you send via **`exec`**, **`async-run`**, or **[`sync-run`](#sync-run)** (`async-run` + **`/api/run_sync`**) runs **on that Windows VM**. Use **Windows shell syntax**: default **`cmd`** (`dir`, `type`, `copy`, `move`, `del`, `where`, backslash paths like `Z:\...` or forward-slash API style `Z:/...`), or **`powershell`** when you need PowerShell (`Get-ChildItem`, `Get-Content`, `Invoke-RestMethod`, etc.). **Do not** assume Unix tools (`ls`, `cat`, `grep`, `cp`, `/tmp`, POSIX paths) exist on the remote side unless you have verified a specific toolchain.
+**Remote environment:** The cloud PC is **Windows** (not Linux/macOS). Every command you send via **`exec`**, **`async-run`**, or **`sync-run`** runs **on that Windows VM**. Use **Windows shell syntax**: default **`cmd`** (`dir`, `type`, `copy`, `move`, `del`, `where`, backslash paths like `Z:\...` or forward-slash API style `Z:/...`), or **`powershell`** when you need PowerShell (`Get-ChildItem`, `Get-Content`, `Invoke-RestMethod`, etc.). **Do not** assume Unix tools (`ls`, `cat`, `grep`, `cp`, `/tmp`, POSIX paths) exist on the remote side unless you have verified a specific toolchain.
 
-**Local files (agent / developer machine):** Reading, writing, or inspecting files **on this machine** does not need a cloud-pc workflow—use normal local tools (editor, `read_file`, a single local shell command, etc.). Reserve `cloud_pc_api.py` (`upload`, `download`, `exec`, `async-run`, sync via **[`sync-run`](#sync-run)**) for **cloud** lifecycle and **VM** paths. Do not overcomplicate local file work with upload/download choreography when the file is already local.
+**Local files (agent / developer machine):** Reading, writing, or inspecting files **on this machine** does not need a cloud-pc workflow—use normal local tools (editor, `read_file`, a single local shell command, etc.). Reserve `cloud_pc_api.py` (`upload`, `download`, `exec`, `async-run`, `sync-run`) for **cloud** lifecycle and **VM** paths. Do not overcomplicate local file work with upload/download choreography when the file is already local.
 
 Prefer the bundled scripts over ad hoc inline API calls:
 
-- `scripts/cloud_pc_api.py` for lifecycle, remote shell execution, **`async-run`** (默认 **`POST /api/run`**，异步—success = pid only，**poll `GET /api/lock`**), **[`sync-run`](#sync-run)**（**`POST /api/run_sync`**，同步—见该节）, upload, and download
+- `scripts/cloud_pc_api.py` for lifecycle, remote shell execution, **`async-run`** (默认 **`POST /api/run_async`**，异步—success = acceptance only，**poll `GET /api/lock_async`**), **`sync-run`**（默认 **`POST /api/run_sync`**，同步—见该节）, upload, and download
 
 All `scripts/...` paths below are relative to this skill directory, so do not hardcode a user-specific home path.
 
@@ -45,9 +45,9 @@ Use this skill when the user asks to:
 1. Always prefer the bundled scripts first.
 2. Use Python or the bundled scripts for the localhost API. Do not use `curl`.
    - **`exec`** (positional `COMMAND_TEXT`) → calls `swcloud /api/machine/exec`; **blocks until the command finishes**; suitable for **quick queries** that finish in **< ~10 seconds** (readiness probes, `dir`, small `type`/`Get-Content`, `nvidia-smi`, etc.)
-   - **`async-run`（异步）** → **`--run-url`** 默认为 **`/api/run`**。Runs PowerShell on the cloud PC that POSTs JSON to the **cloud VM run API** at **`POST /api/run`**. **Does not wait for the workload to finish**: a successful call only confirms the runner **accepted** the job (`pid`, `lock_path`, etc.). **Mandatory:** poll **`GET /api/lock`** on the same run API until the task ends—when the child process has exited, the lock payload includes **`task_finished`**, **`last_exit_code`**, **`task_failed`**, and **`task_error`** if the exit code was non-zero. Without **`/api/lock`**, the API path gives **no stderr/traceback and no failure signal** (child output goes to the run API server on the VM only, unless the app writes its own log files). Suitable for **any task that may run longer than ~10 seconds** (training, inference, music generation, etc.)
-   - **`sync-run`（同步）** → 见 **[CLI reference · `sync-run`](#sync-run)**：通过同一子命令 **`async-run`** 将 **`--run-url`** 设为 **`http://127.0.0.1:5055/api/run_sync`**，调用 **`POST /api/run_sync`**；阻塞至命令结束或 API 层 **`timeout`**；一次返回 **`stdout`** / **`stderr`** / **`exit_code`** / **`timed_out`** 等；锁冲突 **409**；外层 **`--timeout`** 须大于预期运行时间。
-   - **On `async-run` / `sync-run` (same subcommand), body sources**: `--command-part` (repeat per argv token) builds `command_parts`; **`--api-json`** is an inline JSON string for the full POST body; **`--api-body`** is a local UTF-8 file with that JSON. **Do not combine** `--command-part` with `--api-body` or `--api-json`. For flags with values (`--output_path`, `--input_params_file`, etc.), prefer **`--api-json`** or **`--api-body`** with a full `command_parts` (or `command`/`cwd`) object. For **`sync-run`**, the POST body may also include API-level **`timeout`** (float, seconds)—see **[Cloud VM run API](#cloud-vm-run-api)**.
+   - **`async-run`（异步）** → **`--run-url`** 默认为 **`http://127.0.0.1:5055/api/run_async`**（**`POST /api/run_async`**）。Runs PowerShell on the cloud PC that POSTs JSON to the **cloud VM run API**. **Does not wait for the workload to finish**: a successful call only confirms the runner **accepted** the job (`pid`, `lock_path`, etc.). **Mandatory:** poll **`GET /api/lock_async`** until the task ends — when the child process has exited, the lock payload includes **`task_finished`**, **`last_exit_code`**, **`task_failed`**, and **`task_error`** if the exit code was non-zero. Without lock polling, the API path gives **no stderr/traceback and no failure signal** (child output goes to the run API server on the VM only, unless the app writes its own log files). Suitable for **any task that may run longer than ~10 seconds** (training, inference, music generation, etc.)
+   - **`sync-run`（同步）** → 见 **[CLI reference · `sync-run`](#sync-run)**：独立子命令，默认 **`--run-url`** 为 **`http://127.0.0.1:5055/api/run_sync`**，调用 **`POST /api/run_sync`**；阻塞至命令结束或 API 层 **`timeout`**；一次返回 **`stdout`** / **`stderr`** / **`exit_code`** / **`timed_out`** 等；使用 **sync 锁**，与异步任务 **独立**；锁冲突 **409**；外层 **`--timeout`** 须大于预期运行时间。
+   - **On `async-run` / `sync-run` (same flags and handler, different default `--run-url`), body sources**: `--command-part` (repeat per argv token) builds `command_parts`; **`--api-json`** is an inline JSON string for the full POST body; **`--api-body`** is a local UTF-8 file with that JSON. **Do not combine** `--command-part` with `--api-body` or `--api-json`. For flags with values (`--output_path`, `--input_params_file`, etc.), prefer **`--api-json`** or **`--api-body`** with a full `command_parts` (or `command`/`cwd`) object. For **`sync-run`**, the POST body may also include API-level **`timeout`** (float, seconds)—see **[Cloud VM run API](#cloud-vm-run-api)**.
    - **`--json` (global):** prints structured JSON for lifecycle/upload/download; for **`exec`** / **`async-run`** (including **sync-run** invocations), prints the raw **`/api/machine/exec`** response instead of only `stdout`/`stderr`.
    - **Rule: use `exec` + one Windows shell line for viewing results/status and for quick file ops on the VM (`dir`, `type`, `Get-Content`, small copies); use `async-run` + `--api-json` or `--api-body` for starting long-running jobs with complex argv; use sync-run when you need full remote stdout/stderr in one round trip and can set a large enough outer `--timeout`**
 3. Always use forward slashes for remote Windows paths passed to the API, for example `C:/Users/Administrator/Desktop` (the VM is still Windows; slashes are for JSON/API convenience).
@@ -58,14 +58,14 @@ Use this skill when the user asks to:
 8. If an app manifest is malformed JSON, recover conservatively and continue when possible.
 9. Do not invent required app arguments. Ask only for the missing values.
 10. When an app writes outputs on the cloud PC, fetch them with `python3 scripts/cloud_pc_api.py --auto-start-cloud download --remote-path ... --local-path ...`. Default to saving under the user's Desktop unless they specify another `--local-path`.
-11. **Download size limit (~50 MB):** Treat **50 MB** as the practical single-download ceiling for the localhost ↔ cloud transfer API. If a remote artifact is **larger than 50 MB** (or the API rejects the transfer), **do not** rely on a single raw download: use **remote split/chunk download** (what `cloud_pc_api.py` does—parts on the VM, download each part, reassemble locally) and/or **compress or segment** the payload on the cloud PC first so each piece stays under the limit. Prefer **lossy or lossless compression** for media when it preserves the user’s intent.
+11. **Download size limit (~50 MB):** Treat **50 MB** as the practical single-download ceiling for the localhost ↔ cloud transfer API. **`download`** calls **`/api/machine/download`** once with no automatic chunking. If a remote artifact is **larger than 50 MB** (or the API rejects the transfer), **compress or segment** the payload on the cloud PC first so a single transfer stays under the limit, or use another workflow the platform provides. Prefer **lossy or lossless compression** for media when it preserves the user’s intent.
 12. **Before starting or stopping the cloud PC, always ask the user for confirmation first.** Do not proceed without explicit user approval.
 
 ## File size, compression, and ffmpeg (cloud VM)
 
-- **50 MB rule:** Single-file download/upload paths assume roughly **≤ 50 MB** per transfer. Above that, use **`cloud_pc_api.py` automatic chunking** (split on the remote side, download parts, merge locally) or **pre-shrink** the file on the VM (archive, lower bitrate, shorter clip, split into numbered segments).
+- **50 MB rule:** Single-file download/upload paths assume roughly **≤ 50 MB** per transfer. Above that, **pre-shrink** or **split** the file on the VM (archive, lower bitrate, shorter clip, numbered segments) so each **`download`** stays under the limit.
 - **Audio / music outputs:** When generated audio is large or you need to fit under the limit, run **`ffmpeg`** on the cloud PC to re-encode or downmix. Install root (forward slashes for API argv): **`Z:/aicloud/astart/tools/ffmpeg`** — the binary is usually **`Z:/aicloud/astart/tools/ffmpeg/bin/ffmpeg.exe`** (confirm with `dir` on the VM if layout differs; do not assume `ffmpeg` is on `PATH`). Example pattern: lower bitrate AAC/MP3, mono downmix, or trim—only as much as the user’s quality expectations allow.
-- **Order of operations:** Prefer **lossless split** (chunk download) when the user needs the exact original bits; prefer **ffmpeg compression** when a smaller derivative is acceptable and faster to pull down.
+- **Order of operations:** When the user needs smaller transfers, prefer **ffmpeg compression** or **manual split on the VM** before **`download`**.
 
 ## Quick Start
 
@@ -78,9 +78,9 @@ python3 scripts/cloud_pc_api.py --auto-start-client start
 python3 scripts/cloud_pc_api.py --auto-start-client --auto-start-cloud ready
 # Quick commands (<~10s) — plain exec (blocks until done); pass the remote command as one positional string:
 python3 scripts/cloud_pc_api.py --auto-start-cloud exec nvidia-smi
-# Long-running jobs (≥~10s) — async-run: POST /api/run on the VM; asynchronous (success ⇒ pid + JSON only, job keeps running).
+# Long-running jobs (≥~10s) — async-run: POST /api/run_async on the VM (default --run-url); asynchronous (success ⇒ pid + JSON only, job keeps running).
 # For commands with flags (--output_path, --input_params_file, etc.), use --api-json with the full command_parts array:
-python3 scripts/cloud_pc_api.py --auto-start-cloud async-run --run-url "http://127.0.0.1:5055/api/run" --api-json '{"command_parts":["Z:\\aicloud\\astart\\AIProject\\ACE-Step-V1.1\\env\\python.exe","Z:\\aicloud\\astart\\AIProject\\ACE-Step-V1.1\\infer.py","--output_path","C:\\Users\\Administrator\\Desktop\\CloudPC","--input_params_file","Z:\\aicloud\\astart\\AIProject\\ACE-Step-V1.1\\examples\\default\\input_params\\output_20250426071706_0_input_params.json"]}'
+python3 scripts/cloud_pc_api.py --auto-start-cloud async-run --api-json '{"command_parts":["Z:\\aicloud\\astart\\AIProject\\ACE-Step-V1.1\\env\\python.exe","Z:\\aicloud\\astart\\AIProject\\ACE-Step-V1.1\\infer.py","--output_path","C:\\Users\\Administrator\\Desktop\\CloudPC","--input_params_file","Z:\\aicloud\\astart\\AIProject\\ACE-Step-V1.1\\examples\\default\\input_params\\output_20250426071706_0_input_params.json"]}'
 python3 scripts/cloud_pc_api.py --auto-start-cloud upload --local-path "$env:USERPROFILE\Desktop\file.txt" --remote-path C:/Users/Administrator/Desktop/CloudPC/file.txt
 python3 scripts/cloud_pc_api.py --auto-start-cloud download --remote-path C:/Users/Administrator/Desktop/CloudPC/result.txt --local-path "$env:USERPROFILE\Downloads\result.txt"
 python3 scripts/cloud_pc_api.py --auto-start-cloud download --remote-path C:/Users/Administrator/Desktop/CloudPC/large.wav --local-path "$env:USERPROFILE\Downloads\large.wav"
@@ -92,11 +92,11 @@ Warm the session before registry or file work when needed:
 python3 scripts/cloud_pc_api.py --auto-start-client --auto-start-cloud ready
 ```
 
-**Async reminder (see also Core Rules §2 and [Cloud VM run API](#cloud-vm-run-api)):** `POST /api/run` returns only acceptance (`ok`, `pid`, `lock_path`; **409** if busy). **You cannot tell if the job crashed or exited non-zero from that response alone.** Poll **`GET /api/lock`** until `running` is false and inspect **`task_failed`** / **`last_exit_code`** (and **`task_error`** when failed). Long or uncertain work must use **`async-run`** with **`/api/run`**, not plain **`exec`** (~10s practical limit on `/api/machine/exec`). For **one-shot** stdout/stderr + exit status without lock polling, use **[`sync-run`](#sync-run)** / **`POST /api/run_sync`** (larger outer **`--timeout`**).
+**Async reminder (see also Core Rules §2 and [Cloud VM run API](#cloud-vm-run-api)):** **`POST /api/run_async`** returns only acceptance (`ok`, `pid`, `lock_path`; **409** if busy). **You cannot tell if the job crashed or exited non-zero from that response alone.** Poll **`GET /api/lock_async`** until `running` is false and inspect **`task_failed`** / **`last_exit_code`** (and **`task_error`** when failed). Long or uncertain work must use **`async-run`** (default **`/api/run_async`**), not plain **`exec`** (~10s practical limit on `/api/machine/exec`). For **one-shot** stdout/stderr + exit status without lock polling, use **`sync-run`** / **`POST /api/run_sync`** (larger outer **`--timeout`**).
 
 ## CLI reference (`scripts/cloud_pc_api.py`)
 
-Authoritative list of flags and subcommands as implemented in `parse_args()` / handlers. Subcommand is **required** (`dest="command"`). **`sync-run`** is a **documentation-only** name for **`async-run`** with **`--run-url`** → **`/api/run_sync`**—see **[`sync-run`](#sync-run)**.
+Authoritative list of flags and subcommands as implemented in `parse_args()` / handlers. Subcommand is **required** (`dest="command"`). **`async-run`** and **`sync-run`** share the same implementation (PowerShell **`Invoke-RestMethod`** POST on the VM); defaults differ: **`async-run`** → **`/api/run_async`**, **`sync-run`** → **`/api/run_sync`**.
 
 ### Global flags (before the subcommand)
 
@@ -124,11 +124,11 @@ Authoritative list of flags and subcommands as implemented in `parse_args()` / h
 
 Subcommand name in `parse_args()`: **`async-run`**. Builds a PowerShell snippet that **base64-decodes** the POST body and calls **`Invoke-RestMethod -Method Post`** against **`--run-url`**, then returns compressed JSON from the VM. The outer call is still **`/api/machine/exec`** with `shell: powershell`.
 
-**Async default:** **`--run-url`** is **`http://127.0.0.1:5055/api/run`** → **`POST /api/run`**. Success means the runner **accepted** the job only—**poll `GET /api/lock`** for completion and exit status. For synchronous **`POST /api/run_sync`**, see **[`sync-run`](#sync-run)** (same subcommand, different URL).
+**Async default:** **`--run-url`** is **`http://127.0.0.1:5055/api/run_async`** → **`POST /api/run_async`**. Success means the runner **accepted** the job only—**poll `GET /api/lock_async`** for completion and exit status. For synchronous **`POST /api/run_sync`**, use subcommand **`sync-run`** or override **`--run-url`**.
 
 | Argument | Type / default | Notes |
 |----------|----------------|--------|
-| `--run-url` | string, default `http://127.0.0.1:5055/api/run` | POST target on the **cloud** (forwarded via swcloud). Keep default for **async** `/api/run`. |
+| `--run-url` | string, default `http://127.0.0.1:5055/api/run_async` | POST target on the **cloud** (forwarded via swcloud). |
 | `--command-part` `PART` | repeatable | Each use appends one string to `command_parts` in the POST body. **Mutually exclusive** with `--api-body` and `--api-json` (script raises if combined). |
 | `--api-json` | string | Inline JSON for the **entire** POST body (must be valid JSON; validated locally). |
 | `--api-body` | path | UTF-8 file whose **full contents** are the POST body (must be valid JSON; validated locally). |
@@ -140,17 +140,17 @@ Subcommand name in `parse_args()`: **`async-run`**. Builds a PowerShell snippet 
 
 ### `sync-run`
 
-**Not a separate argparse subcommand**—use **`async-run`** with **`--run-url "http://127.0.0.1:5055/api/run_sync"`** so the same PowerShell **`Invoke-RestMethod`** POST hits **`POST /api/run_sync`** on the **cloud VM run API** (forwarded via swcloud).
+Subcommand name in `parse_args()`: **`sync-run`**. Same PowerShell wrapper and flags as **`async-run`**; default **`--run-url`** is **`http://127.0.0.1:5055/api/run_sync`** so **`Invoke-RestMethod`** hits **`POST /api/run_sync`** on the **cloud VM run API** (forwarded via swcloud). You can still use **`async-run --run-url ".../api/run_sync"`** if you prefer one subcommand name.
 
-**Behavior:** The **`/api/run_sync`** endpoint **blocks** until the remote command exits or until the optional API body field **`timeout`** (float, seconds) elapses (process killed; response carries **`timed_out`**). The HTTP response includes **`stdout`**, **`stderr`**, **`exit_code`**, **`timed_out`**, and related fields—**no `GET /api/lock` polling**. Lock busy → **409 Conflict** (same as **`/api/run`**).
+**Behavior:** The **`/api/run_sync`** endpoint **blocks** until the remote command exits or until the optional API body field **`timeout`** (float, seconds) elapses (process killed; response carries **`timed_out`**). The HTTP response includes **`stdout`**, **`stderr`**, **`exit_code`**, **`timed_out`**, and related fields—**no lock polling**. It uses the **sync** singleton lock (**`GET /api/lock_sync`**), independent from async jobs. Lock busy → **409 Conflict** (same semantics as busy **`/api/run_async`** on the **other** lock).
 
-**Outer `--timeout`:** The wrapping **`/api/machine/exec`** still enforces **`async-run`’s `--timeout`** (default 30s). For jobs that may run longer, **raise `--timeout`** so the outer exec does not kill the PowerShell wrapper before **`/api/run_sync`** returns.
+**Outer `--timeout`:** The wrapping **`/api/machine/exec`** still enforces **`--timeout`** (default 30s). For jobs that may run longer, **raise `--timeout`** so the outer exec does not kill the PowerShell wrapper before **`/api/run_sync`** returns.
 
-**POST body:** Same sources as **[`async-run`](#async-run)** (`--command-part` / `--api-json` / `--api-body`). Fields: **`command`** or **`command_parts`** (required, same as `/api/run`); optional **`cwd`**; optional **`timeout`** (API-side limit in seconds). See **[Cloud VM run API](#cloud-vm-run-api)** for full **`/api/run_sync`** contract.
+**POST body:** Same sources as **[`async-run`](#async-run)** (`--command-part` / `--api-json` / `--api-body`). Fields: **`command`** or **`command_parts`** (required, same as **`/api/run_async`**); optional **`cwd`**; optional **`timeout`** (API-side limit in seconds). See **[Cloud VM run API](#cloud-vm-run-api)** for full **`/api/run_sync`** contract.
 
 | Concern | Notes |
 |---------|--------|
-| CLI flags | Identical table to **`async-run`** except **`--run-url`** must be **`.../api/run_sync`**. |
+| CLI flags | Identical table to **`async-run`** except default **`--run-url`** is **`.../api/run_sync`**. |
 | JSON **`timeout`** | Optional in POST body; kills remote task when exceeded. Distinct from outer **`--timeout`**. |
 
 ### `upload`
@@ -166,9 +166,9 @@ Subcommand name in `parse_args()`: **`async-run`**. Builds a PowerShell snippet 
 |----------|----------|--------|
 | `--remote-path` | yes | File on the cloud PC. |
 | `--local-path` | yes | Where to write locally. |
-| `--tail-bytes` | no; default **0** | If **> 0**, requests download of only the **last N bytes** via `/api/machine/download` (no chunk fallback). If **0**, uses **`download_with_chunk_fallback`** (split on VM, fetch parts, merge locally) when the single-shot transfer hits size limits. |
+| `--tail-bytes` | no; default **0** | Passed to **`/api/machine/download`**: if **> 0**, only the **last N bytes** are requested; if **0**, the full file is downloaded in one call. |
 
-**Audio before download:** Raw or lossless outputs (for example **`.wav`**, **`.flac`**, long **`.mp3`**) are often **too large** for a practical single pull (~50 MB ceiling; chunking is slower). On the **cloud Windows VM**, run **`ffmpeg`** first to **re-encode or downmix** into a smaller file (AAC/MP3, lower bitrate, mono if acceptable), write to a new path, then **`download`** that compressed artifact. Binary and path conventions → **[File size, compression, and ffmpeg (cloud VM)](#file-size-compression-and-ffmpeg-cloud-vm)**.
+**Audio before download:** Raw or lossless outputs (for example **`.wav`**, **`.flac`**, long **`.mp3`**) are often **too large** for a practical single pull (~50 MB ceiling). On the **cloud Windows VM**, run **`ffmpeg`** first to **re-encode or downmix** into a smaller file (AAC/MP3, lower bitrate, mono if acceptable), write to a new path, then **`download`** that compressed artifact. Binary and path conventions → **[File size, compression, and ffmpeg (cloud VM)](#file-size-compression-and-ffmpeg-cloud-vm)**.
 
 ## Natural-Language Intent Mapping
 
@@ -200,10 +200,10 @@ When the user asks to inspect one app:
 When the user asks for an outcome (for example generating music):
 
 1. Resolve the app folder and manifest **only** under **`Z:/aicloud/astart/ai-service/skills/...`** or **`Q:/skills/...`** (check **both** roots; if missing in both, stop—do not search other paths); confirm arguments with the user—do not guess required inputs.
-2. Build the full argv for the app (or a single shell line if the manifest uses `command` as a string) and start it with `async-run` and `--run-url` pointing at `/api/run`, using `--api-json` with a `command_parts` array.
-3. After `async-run`, **poll `GET /api/lock`** until the task is no longer `running`; if **`task_failed`** is true or **`last_exit_code`** ≠ 0, treat the run as failed—do not assume success from `POST /api/run` alone.
+2. Build the full argv for the app (or a single shell line if the manifest uses `command` as a string) and start it with **`async-run`** (default **`/api/run_async`**) using **`--api-json`** with a `command_parts` array.
+3. After **`async-run`**, **poll `GET /api/lock_async`** until the task is no longer `running`; if **`task_failed`** is true or **`last_exit_code`** ≠ 0, treat the run as failed—do not assume success from **`POST /api/run_async`** alone.
 4. When outputs exist on known paths, download with `python3 scripts/cloud_pc_api.py --auto-start-cloud download --remote-path ... --local-path ...` and give the user the local paths.
-5. For deep diagnostics (Python tracebacks, stderr), the child’s output may only appear on the run API server console on the VM unless the app redirects logs—**`/api/lock` still surfaces process exit status**; use app log files or VM console when you need full text.
+5. For deep diagnostics (Python tracebacks, stderr), the child’s output may only appear on the run API server console on the VM unless the app redirects logs—**`GET /api/lock_async` still surfaces process exit status**; use app log files or VM console when you need full text.
 
 ## Registry Layout
 
@@ -244,40 +244,41 @@ When an app fails unexpectedly:
 
 ## Cloud VM run API
 
-The **run API** is an HTTP service on the **cloud Windows machine** (typically **`127.0.0.1:5055`** from the VM’s perspective; **`--run-url`** in `cloud_pc_api.py` uses that loopback address because the POST is executed **on the cloud PC** via `swcloud`). It is **not** part of this skill’s `scripts/` bundle—assume the platform exposes **`/api/run`**, **`/api/run_sync`**, **`/api/lock`**, and **`/health`** when the cloud session is up.
+The **run API** is an HTTP service on the **cloud Windows machine** (typically **`127.0.0.1:5055`** from the VM’s perspective; **`--run-url`** in `cloud_pc_api.py` uses that loopback address because the POST is executed **on the cloud PC** via `swcloud`). It is **not** part of this skill’s `scripts/` bundle—assume the platform exposes the paths below and **`/health`** when the cloud session is up.
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/health` | Liveness |
-| GET | `/api/lock` | **Required for async observability:** `locked`, `pid`, `running`; after the child exits, **`task_finished`**, **`last_exit_code`**, **`task_failed`**, **`task_error`** (non-zero exit). Without polling this, API callers do not see failure. |
-| POST | `/api/run` | Start one detached task; body JSON (use for any work that may exceed ~10s—avoids synchronous `/api/machine/exec` timeouts) |
-| POST | `/api/run_sync` | Start one **synchronous** task: blocks until the command finishes or **`timeout`** (seconds) fires; returns **`stdout`**, **`stderr`**, **`exit_code`**, **`timed_out`**, etc. **409** if lock busy (same as `/api/run`). |
+| GET | `/api/lock_async` | **Required for async observability:** `locked`, `pid`, `running`; after the child exits, **`task_finished`**, **`last_exit_code`**, **`task_failed`**, **`task_error`** (non-zero exit). Without polling this, API callers do not see failure. |
+| GET | `/api/lock_sync` | Status for the **sync** singleton lock. Use when debugging **`/api/run_sync`** conflicts—not for polling async job completion. |
+| POST | `/api/run_async` | Start one **detached** task; body JSON (use for any work that may exceed ~10s—avoids synchronous `/api/machine/exec` timeouts). |
+| POST | `/api/run_sync` | Start one **synchronous** task: blocks until the command finishes or **`timeout`** (seconds) fires; returns **`stdout`**, **`stderr`**, **`exit_code`**, **`timed_out`**, etc. Uses the **sync** lock; **409** if that lock is busy (independent from async **409**). |
 
-**Why this exists:** `/api/run` spawns the workload in the background and returns a `pid`. The normal remote shell path (`/api/machine/exec` via plain `exec`) blocks until the command exits and hits client timeouts; **treat ~10 seconds as the practical ceiling** for that path. **`/api/run_sync`** is for callers who need **full output and exit status in one HTTP response** and can afford a longer-blocking request (still subject to outer `/api/machine/exec` timeouts when invoked via `async-run`).
+**Why this exists:** **`/api/run_async`** spawns the workload in the background and returns a `pid`. The normal remote shell path (`/api/machine/exec` via plain `exec`) blocks until the command exits and hits client timeouts; **treat ~10 seconds as the practical ceiling** for that path. **`/api/run_sync`** is for callers who need **full output and exit status in one HTTP response** and can afford a longer-blocking request (still subject to outer `/api/machine/exec` timeouts when invoked via **`async-run`** / **`sync-run`**).
 
-**Why `/api/lock` matters:** `POST /api/run` does **not** stream stderr or return Python tracebacks to the client. Detached children usually attach stdout/stderr to the **run API server process** on the VM (implementation-dependent). The **only** structured signal on the HTTP API for “did it fail?” is **`GET /api/lock`** after the process exits (non-zero → **`task_failed`**: true, **`task_error`** set). Poll it on an interval until `running` is false (or handle **`pid_check_error`** if present).
+**Why `GET /api/lock_async` matters:** **`POST /api/run_async`** does **not** stream stderr or return Python tracebacks to the client. Detached children usually attach stdout/stderr to the **run API server process** on the VM (implementation-dependent). The **only** structured signal on the HTTP API for “did it fail?” is **`GET /api/lock_async`** after the process exits (non-zero → **`task_failed`**: true, **`task_error`** set). Poll it on an interval until `running` is false (or handle **`pid_check_error`** if present).
 
-**POST `/api/run` body (JSON):**
+**POST `/api/run_async` body (JSON):**
 
 - `command_parts`: non-empty array of argv strings (preferred; assembled into a Windows command line on the server).
 - or `command`: single string to run in a shell.
 - optional `cwd`: working directory string.
 
-**Responses:** On success, HTTP 200 and JSON including `ok: true`, `pid`, `lock_path`. If a previous task's PID is still running, HTTP **409** with `busy`, `conflict_pid`. Malformed body → **400**. The child's stdout/stderr usually go to the run API server on the VM—**not** to your `async-run` response.
+**Responses:** On success, HTTP 200 and JSON including `ok: true`, `pid`, `lock_path`. If a previous **async** task's PID is still running, HTTP **409** with `busy`, `conflict_pid`. Malformed body → **400**. The child's stdout/stderr usually go to the run API server on the VM—**not** to your `async-run` response.
 
 **POST `/api/run_sync` body (JSON):**
 
-- **`command_parts`**: non-empty array of argv strings (preferred), or **`command`**: single string—same meaning as `/api/run`.
+- **`command_parts`**: non-empty array of argv strings (preferred), or **`command`**: single string—same meaning as **`/api/run_async`**.
 - **`cwd`** (optional): working directory.
 - **`timeout`** (optional, float): maximum runtime in **seconds**. If the task does not finish in time, the process is **killed** and the response indicates timeout (e.g. **`timed_out`: true**).
 
-**POST `/api/run_sync` responses:** HTTP **200** with the task’s final state: **`exit_code`**, **`stdout`**, **`stderr`**, **`timed_out`**, and any other fields the runner adds for completion status. Lock conflict → HTTP **409 Conflict** (same semantics as busy **`/api/run`**). Malformed body → **400**.
+**POST `/api/run_sync` responses:** HTTP **200** with the task’s final state: **`exit_code`**, **`stdout`**, **`stderr`**, **`timed_out`**, and any other fields the runner adds for completion status. **Sync** lock conflict → HTTP **409 Conflict**. Malformed body → **400**.
 
-**From the agent's machine:** Do not call `5055` directly unless you are on the VM. Use `python3 scripts/cloud_pc_api.py ... async-run --run-url "http://127.0.0.1:5055/api/run" ...` so the local swcloud client forwards execution to the cloud and the POST runs there. Then **poll lock status** by running a second remote step (e.g. `exec` with `Invoke-RestMethod -Uri 'http://127.0.0.1:5055/api/lock'` or equivalent) until you see a terminal state with **`task_failed`** / **`last_exit_code`** as needed—`async-run` only wraps the **POST**, not lock polling.
+**From the agent's machine:** Do not call `5055` directly unless you are on the VM. Use `python3 scripts/cloud_pc_api.py ... async-run ...` (default **`/api/run_async`**) so the local swcloud client forwards execution to the cloud and the POST runs there. Then **poll lock status** by running a second remote step (e.g. `exec` with `Invoke-RestMethod -Uri 'http://127.0.0.1:5055/api/lock_async'`) until you see a terminal state with **`task_failed`** / **`last_exit_code`** as needed—`async-run` only wraps the **POST**, not lock polling.
 
-**Synchronous path:** See **[`sync-run`](#sync-run)**—`async-run --run-url "http://127.0.0.1:5055/api/run_sync"` with a large enough outer **`--timeout`**.
+**Synchronous path:** Use **`sync-run`** (default **`/api/run_sync`**) with a large enough outer **`--timeout`**, or `async-run --run-url "http://127.0.0.1:5055/api/run_sync"`.
 
 ## Notes
 
-- **Cross-references:** Remote OS and command style → opening **Remote environment** + **Core Rules** §2–§5; **local vs cloud file handling** → **Remote environment** (Local files paragraph); VM skill roots (**only** `Z:/aicloud/astart/ai-service/skills/` + `Q:/skills/`) and manifest order → **Cloud skills roots** + **Registry Layout**; localhost flags and subcommands → **CLI reference**; **`/api/run`**, **`/api/run_sync`**, **`/api/lock`** → **Cloud VM run API**; `exec` vs **`async-run`** vs **`sync-run`** and ~10s rule → **Core Rules** §2 + **`sync-run`**; large downloads → **Core Rules** §11 and **File size, compression, and ffmpeg**.
+- **Cross-references:** Remote OS and command style → opening **Remote environment** + **Core Rules** §2–§5; **local vs cloud file handling** → **Remote environment** (Local files paragraph); VM skill roots (**only** `Z:/aicloud/astart/ai-service/skills/` + `Q:/skills/`) and manifest order → **Cloud skills roots** + **Registry Layout**; localhost flags and subcommands → **CLI reference**; **`/api/run_async`**, **`/api/run_sync`**, **`/api/lock_async`**, **`/api/lock_sync`** → **Cloud VM run API**; `exec` vs **`async-run`** vs **`sync-run`** and ~10s rule → **Core Rules** §2 + **`sync-run`**; large downloads → **Core Rules** §11 and **File size, compression, and ffmpeg**.
 - Deliverables: if the user needs an artifact from the cloud PC, **download** it and give the **local path**—do not leave it only on the VM.
