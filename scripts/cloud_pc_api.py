@@ -137,7 +137,7 @@ def ensure_cloud(base_url: str, auto_start_cloud: bool) -> dict:
         if not auto_start_cloud:
             raise RuntimeError("cloud PC is not streaming; rerun with --auto-start-cloud or start it first")
 
-        result = request_json(base_url, "/api/cloud/start", params={}, timeout=120)
+        result = request_json(base_url, "/api/cloud/start", params={"show": False}, timeout=120)
         if result.get("status") == "error":
             raise RuntimeError(f"cloud start failed: [{result.get('code')}] {result.get('message')}")
 
