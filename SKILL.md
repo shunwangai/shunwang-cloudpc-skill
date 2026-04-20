@@ -3,7 +3,7 @@ name: shunwang-cloudpc
 description: Operate a remote cloud Windows PC through the local swcloud client. 
 ---
 
-# Cloud PC
+# Shunwang Cloud PC
 
 Use this skill for remote operations on the cloud Windows machine exposed by the local `swcloud` client.
 
