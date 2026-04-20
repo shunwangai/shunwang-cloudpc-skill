@@ -1,6 +1,0 @@
-{
-    "name": "shunwang-cloudpc",
-    "version": "1.0.0",
-    "description": "Operate a remote cloud Windows PC through the local swcloud client. Cloud-side apps live under Z:/aicloud/astart/ai-service/skills/ (platform/bundled) and Q:/skills/ (user-customized)—the folder name is skills (plural); each child directory is one skill. Always list and read manifests in both roots when discovering remote skills, then launch via scripts/cloud_pc_api.py async-run (asynchronous) to run_flask_api.py (default http://127.0.0.1:5055/api/run): POST /api/run only returns pid/metadata; you must poll GET /api/lock to see task failure (exit code)—otherwise failures are invisible to the API caller. Singleton .lock (409 when busy). Work that may exceed ~10s must use /api/run; plain machine exec times out. Use when the user wants lifecycle, file transfer, GPU checks, or to find/run a skill—**only** under **`Z:/aicloud/astart/ai-service/skills/`** or **`Q:/skills/`** on the VM (no other skill roots).",
-    "author": "shunwangai"
-  }
